@@ -53,6 +53,8 @@ import org.apache.lucene.queryparser.classic.ParseException;
 import org.apache.lucene.queryparser.classic.QueryParser;
 import org.apache.lucene.search.*;
 import org.apache.lucene.util.BytesRef;
+import org.apache.solr.common.SolrDocument;
+import org.apache.solr.common.SolrDocumentList;
 import org.apache.solr.common.params.SolrParams;
 import org.apache.solr.common.util.NamedList;
 import org.apache.solr.handler.RequestHandlerBase;
@@ -202,6 +204,7 @@ public class LireRequestHandler extends RequestHandlerBase {
     /**
      * Parses the fq param and adds it as a filter query or reverts to null if nothing is found
      * or an Exception is thrown.
+     *
      * @param fq the String attached to the query.
      * @return either a query from the QueryParser or null
      */
@@ -233,11 +236,17 @@ public class LireRequestHandler extends RequestHandlerBase {
         if (maxDoc < 1)
             rsp.add("Error", "No documents in index");
         else {
-            LinkedList list = new LinkedList();
+            SolrDocumentList list = new SolrDocumentList();
             while (list.size() < paramRows) {
                 Document d = searcher.doc((int) Math.floor(Math.random() * maxDoc));
-                list.add(d);
+                SolrDocument solrDocument = new SolrDocument();
+                for (IndexableField indexableField : d) {
+                    solrDocument.addField(indexableField.name(), indexableField.stringValue());
+                }
+                list.add(solrDocument);
             }
+            list.setNumFound((long) paramRows);
+            list.setMaxScore(0f);
             rsp.addResponse(list);
         }
     }
@@ -402,12 +411,13 @@ public class LireRequestHandler extends RequestHandlerBase {
             }
         } else {
             queryString = params.get("hashes").trim();
-            if (!useMetricSpaces) {
+            if (!useMetricSpaces || !MetricSpaces.supportsFeature(queryFeature)) {
                 qp = new QueryParser(paramField, new WhitespaceAnalyzer());
             } else {
                 qp = new QueryParser(paramField.replace("_ha", "_ms"), new WhitespaceAnalyzer());
             }
         }
+        System.out.println(paramField);
         Query query = null;
         try {
             query = qp.parse(queryString);
@@ -438,6 +448,7 @@ public class LireRequestHandler extends RequestHandlerBase {
                           int maximumHits, Query filterQuery, Query query, GlobalFeature queryFeature)
             throws IOException, IllegalAccessException, InstantiationException {
         // temp feature instance
+        System.out.println(query.toString());
         GlobalFeature tmpFeature = queryFeature.getClass().newInstance();
         // Taking the time of search for statistical purposes.
         time = System.currentTimeMillis();
@@ -469,20 +480,24 @@ public class LireRequestHandler extends RequestHandlerBase {
         // Creating response ...
         time = System.currentTimeMillis() - time;
         rsp.add("ReRankSearchTime", time + "");
-        LinkedList list = new LinkedList();
+        SolrDocumentList list = new SolrDocumentList();
+        Double minScore = Double.MAX_VALUE;
         for (Iterator<CachingSimpleResult> it = resultScoreDocs.iterator(); it.hasNext(); ) {
             CachingSimpleResult result = it.next();
-            HashMap m = new HashMap(2);
-            m.put("d", result.getDistance());
+            SolrDocument solrDocument = new SolrDocument();
+            solrDocument.put("d", result.getDistance());
             // add fields as requested:
             if (req.getParams().get("fl") == null) {
-                m.put("id", result.getDocument().get("id"));
+                solrDocument.put("id", result.getDocument().get("id"));
                 if (result.getDocument().get("title") != null)
-                    m.put("title", result.getDocument().get("title"));
+                    solrDocument.put("title", result.getDocument().get("title"));
             } else {
                 String fieldsRequested = req.getParams().get("fl");
                 if (fieldsRequested.contains("score")) {
-                    m.put("score", result.getDistance());
+                    solrDocument.put("score", result.getDistance());
+                }
+                if (result.getDistance() < minScore) {
+                    minScore = result.getDistance();
                 }
                 if (fieldsRequested.contains("*")) {
                     // all fields
@@ -490,9 +505,9 @@ public class LireRequestHandler extends RequestHandlerBase {
                         String tmpField = field.name();
 
                         if (result.getDocument().getFields(tmpField).length > 1) {
-                            m.put(result.getDocument().getFields(tmpField)[0].name(), result.getDocument().getValues(tmpField));
+                            solrDocument.put(result.getDocument().getFields(tmpField)[0].name(), result.getDocument().getValues(tmpField));
                         } else if (result.getDocument().getFields(tmpField).length > 0) {
-                            m.put(result.getDocument().getFields(tmpField)[0].name(), result.getDocument().getFields(tmpField)[0].stringValue());
+                            solrDocument.put(result.getDocument().getFields(tmpField)[0].name(), result.getDocument().getFields(tmpField)[0].stringValue());
                         }
                     }
                 } else {
@@ -504,19 +519,20 @@ public class LireRequestHandler extends RequestHandlerBase {
                     while (st.hasMoreElements()) {
                         String tmpField = st.nextToken();
                         if (result.getDocument().getFields(tmpField).length > 1) {
-                            m.put(result.getDocument().getFields(tmpField)[0].name(), result.getDocument().getValues(tmpField));
+                            solrDocument.put(result.getDocument().getFields(tmpField)[0].name(), result.getDocument().getValues(tmpField));
                         } else if (result.getDocument().getFields(tmpField).length > 0) {
-                            m.put(result.getDocument().getFields(tmpField)[0].name(), result.getDocument().getFields(tmpField)[0].stringValue());
+                            solrDocument.put(result.getDocument().getFields(tmpField)[0].name(), result.getDocument().getFields(tmpField)[0].stringValue());
                         }
                     }
                 }
             }
-//            m.put(field, result.getDocument().get(field));
-//            m.put(field.replace("_ha", "_hi"), result.getDocument().getBinaryValue(field));
-            list.add(m);
+//            solrDocument.put(field, result.getDocument().get(field));
+//            solrDocument.put(field.replace("_ha", "_hi"), result.getDocument().getBinaryValue(field));
+            list.add(solrDocument);
         }
-        rsp.add("docs", list);
-        // rsp.add("Test-name", "Test-val");
+        list.setNumFound(numberOfResults);
+        list.setMaxScore(minScore.floatValue());
+        rsp.add("response", list);
     }
 
     private TreeSet<CachingSimpleResult> getReRankedResults(Iterator<Integer> docIterator, BinaryDocValues binaryValues, GlobalFeature queryFeature, GlobalFeature tmpFeature, int maximumHits, IndexSearcher searcher) throws IOException {
@@ -602,8 +618,8 @@ public class LireRequestHandler extends RequestHandlerBase {
      * while deleting those that are not in the index at all. Meaning: terms sorted by docFreq ascending, removing
      * those with docFreq == 0
      *
-     * @param hashes     the int[] of hashes
-     * @param paramField the field in the index.
+     * @param hashes                 the int[] of hashes
+     * @param paramField             the field in the index.
      * @param removeZeroDocFreqTerms
      * @return
      */
