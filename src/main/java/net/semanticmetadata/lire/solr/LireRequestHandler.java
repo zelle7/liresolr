@@ -417,7 +417,6 @@ public class LireRequestHandler extends RequestHandlerBase {
                 qp = new QueryParser(paramField.replace("_ha", "_ms"), new WhitespaceAnalyzer());
             }
         }
-        System.out.println(paramField);
         Query query = null;
         try {
             query = qp.parse(queryString);
@@ -448,7 +447,6 @@ public class LireRequestHandler extends RequestHandlerBase {
                           int maximumHits, Query filterQuery, Query query, GlobalFeature queryFeature)
             throws IOException, IllegalAccessException, InstantiationException {
         // temp feature instance
-        System.out.println(query.toString());
         GlobalFeature tmpFeature = queryFeature.getClass().newInstance();
         // Taking the time of search for statistical purposes.
         time = System.currentTimeMillis();
